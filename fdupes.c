@@ -51,6 +51,7 @@
 #define F_RECURSEAFTER      0x0200
 #define F_NOPROMPT          0x0400
 #define F_SUMMARIZEMATCHES  0x0800
+#define F_RELINK	    0x1000
 
 char *program_name;
 
@@ -141,7 +142,7 @@ void escapefilename(char *escape_list, char **filename_ptr)
   }
 }
 
-off_t filesize(char *filename) {
+off_t filesize(const char *filename) {
   struct stat s;
 
   if (stat(filename, &s) != 0) return -1;
@@ -149,7 +150,7 @@ off_t filesize(char *filename) {
   return s.st_size;
 }
 
-dev_t getdevice(char *filename) {
+dev_t getdevice(const char *filename) {
   struct stat s;
 
   if (stat(filename, &s) != 0) return 0;
@@ -157,7 +158,7 @@ dev_t getdevice(char *filename) {
   return s.st_dev;
 }
 
-ino_t getinode(char *filename) {
+ino_t getinode(const char *filename) {
   struct stat s;
    
   if (stat(filename, &s) != 0) return 0;
@@ -165,7 +166,7 @@ ino_t getinode(char *filename) {
   return s.st_ino;   
 }
 
-time_t getmtime(char *filename) {
+time_t getmtime(const char *filename) {
   struct stat s;
 
   if (stat(filename, &s) != 0) return 0;
@@ -696,7 +697,7 @@ char *revisefilename(char *path, int seq)
   return newpath;
 } */
 
-int relink(char *oldfile, char *newfile)
+static int relink(const char *oldfile, const char *newfile)
 {
   dev_t od;
   dev_t nd;
@@ -719,7 +720,7 @@ int relink(char *oldfile, char *newfile)
   return 1;
 }
 
-void deletefiles(file_t *files, int prompt, FILE *tty)
+static void delete_or_relink_files(file_t *files, int prompt, int do_relink, FILE *tty)
 {
   int counter;
   int groups = 0;
@@ -843,12 +844,38 @@ void deletefiles(file_t *files, int prompt, FILE *tty)
 
       printf("\n");
 
+      const char * keep_name = NULL;
+      if (do_relink)
+	{
+	  for (x=1; x <= counter; x++)
+	    {
+	      if (preserve [x])
+		{
+		  keep_name = dupelist[x]->d_name;
+		  break;
+		}
+	    }
+	}
+
       for (x = 1; x <= counter; x++) { 
 	if (preserve[x])
 	  printf("   [+] %s\n", dupelist[x]->d_name);
 	else {
 	  if (remove(dupelist[x]->d_name) == 0) {
-	    printf("   [-] %s\n", dupelist[x]->d_name);
+	    if (do_relink && keep_name)
+	      {
+		if (relink (keep_name, dupelist[x]->d_name) != 0)
+		  printf("   [>] %s->%s\n", dupelist[x]->d_name, keep_name);
+		else
+		  {
+		    printf("   [!>] %s -> %s", dupelist[x]->d_name, keep_name);
+		    printf("-- unable to link file !\n");
+		  }
+	      }
+	    else
+	      {
+		printf("   [-] %s\n", dupelist[x]->d_name);
+	      }
 	  } else {
 	    printf("   [!] %s ", dupelist[x]->d_name);
 	    printf("-- unable to delete file!\n");
@@ -954,7 +981,7 @@ void help_text()
   printf("                  \twith -s or --symlinks, or when specifying a\n");
   printf("                  \tparticular directory more than once; refer to the\n");
   printf("                  \tfdupes documentation for additional information\n");
-  /*printf(" -l --relink      \t(description)\n");*/
+  printf(" -l --relink      \t(description)\n");
   printf(" -N --noprompt    \ttogether with --delete, preserve the first file in\n");
   printf("                  \teach set of duplicates and delete the rest without\n");
   printf("                  \tprompting the user\n");
@@ -1047,6 +1074,9 @@ int main(int argc, char **argv) {
     case 'd':
       SETFLAG(flags, F_DELETEFILES);
       break;
+    case 'l':
+      SETFLAG(flags, F_RELINK);
+      break;
     case 'v':
       printf("fdupes %s\n", VERSION);
       exit(0);
@@ -1078,6 +1108,10 @@ int main(int argc, char **argv) {
 
   if (ISFLAG(flags, F_SUMMARIZEMATCHES) && ISFLAG(flags, F_DELETEFILES)) {
     errormsg("options --summarize and --delete are not compatible\n");
+    exit(1);
+  }
+  if (ISFLAG(flags, F_RELINK) && ISFLAG(flags, F_DELETEFILES)) {
+    errormsg("options --relink and --delete are not compatible\n");
     exit(1);
   }
 
@@ -1156,16 +1190,17 @@ int main(int argc, char **argv) {
 
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\r%40s\r", " ");
 
-  if (ISFLAG(flags, F_DELETEFILES))
+  if (ISFLAG(flags, F_DELETEFILES) || ISFLAG(flags, F_RELINK))
   {
+    int relink = ISFLAG(flags, F_RELINK) != 0;
     if (ISFLAG(flags, F_NOPROMPT))
     {
-      deletefiles(files, 0, 0);
+      delete_or_relink_files(files, 0, relink, 0);
     }
     else
     {
       stdin = freopen("/dev/tty", "r", stdin);
-      deletefiles(files, 1, stdin);
+      delete_or_relink_files(files, 1, relink, stdin);
     }
   }
 
